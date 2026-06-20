@@ -103,8 +103,15 @@ For **ppc64le** the VSX SIMD path is now **validated on real POWER10 silicon**
 official vectors and differential fuzz pass bit-exact on native hardware. No
 clean SIMD-vs-scalar speedup is quoted — the value of this package is XXH3-64
 *breadth* across six arches (where the existing libraries ship none for ppc64le),
-not peak throughput. For **s390x** the SIMD path stays **QEMU-validated for
-correctness only; native throughput pending** a GitHub-hosted IBM Z runner.
+not peak throughput. For **riscv64** the RVV SIMD path is likewise now
+**measured/validated on a real SpacemiT X60** (RVV 1.0, GCC Compile Farm, Go
+1.26.4, June 2026): the official vectors and differential fuzz pass bit-exact on
+native hardware. The X60 benchmark was partial and there is **no clean
+SIMD-vs-scalar speedup to quote** on this low-power, *in-order* core (currently
+the only widely-available RVV 1.0 silicon) — again, the value here is XXH3-64
+*breadth* across arches, not peak throughput. For **s390x** the SIMD path stays
+**QEMU-validated for correctness only; native throughput pending** a
+GitHub-hosted IBM Z runner.
 amd64 SIMD is correctness- and coverage-validated on a real x86_64 OS; the
 benchmark figures from that (QEMU-backed) VM are not representative of native
 AVX2 hardware and are omitted.
