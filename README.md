@@ -98,11 +98,24 @@ kernel (one call per 64 bytes) that prioritises portability and bit-exactness
 across six arches over peak throughput. Closing that gap (block-at-a-time
 kernels) is the obvious next step.
 
-For **ppc64le and s390x** the SIMD path is **QEMU-validated for correctness;
-native throughput numbers are pending real hardware** — but these are arches the
-existing libraries provide no SIMD for at all. amd64 SIMD is correctness- and
-coverage-validated on a real x86_64 OS; the benchmark figures from that
-(QEMU-backed) VM are not representative of native AVX2 hardware and are omitted.
+For **ppc64le** the VSX SIMD path is now **validated on real POWER10 silicon**
+(GCC Compile Farm, https://portal.cfarm.net/, VSX, Go 1.26.4, June 2026): the
+official vectors and differential fuzz pass bit-exact on native hardware. No
+clean SIMD-vs-scalar speedup is quoted — the value of this package is XXH3-64
+*breadth* across six arches (where the existing libraries ship none for ppc64le),
+not peak throughput. For **s390x** the SIMD path stays **QEMU-validated for
+correctness only; native throughput pending** a GitHub-hosted IBM Z runner.
+amd64 SIMD is correctness- and coverage-validated on a real x86_64 OS; the
+benchmark figures from that (QEMU-backed) VM are not representative of native
+AVX2 hardware and are omitted.
+
+### Seventh architecture: ppc64 (big-endian)
+
+Beyond the six SIMD targets, the portable scalar kernel is now build- and test-
+validated on **ppc64 (big-endian)** on real POWER9 silicon (GCC Compile Farm) —
+digest bit-exact against the official vectors on a big-endian target distinct
+from s390x's vector kernel. ppc64 BE carries no VSX build tag, so it takes the
+scalar path. Framing: **six SIMD targets, validated on seven architectures.**
 
 ## License
 
