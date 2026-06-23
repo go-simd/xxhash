@@ -1,0 +1,31 @@
+name: bench-amd64
+# Native amd64 AVX2 perf on the ubuntu-latest GitHub Actions runner (real Xeon/
+# EPYC with AVX2). The dev host is Apple Silicon arm64, so the amd64 AVX2 kernel
+# cannot be benched there (Rosetta has no AVX2; qemu TCG timing is meaningless).
+# Absolute ns/op on a shared runner is noisy, but ratios measured back-to-back
+# in the SAME job on the SAME CPU (go-simd XXH3 vs zeebo/xxh3 ref) are valid.
+# Manual: gh workflow run bench-amd64.yml
+on:
+  workflow_dispatch:
+jobs:
+  bench:
+    runs-on: ubuntu-latest # native amd64 (has AVX2)
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with: { go-version: stable }
+      - name: record CPU capability
+        run: |
+          echo "== cpu flags (avx) =="
+          grep -m1 -oE 'avx2|avx512[a-z]+' /proc/cpuinfo | sort -u | tr '\n' ' '; echo
+          echo "== full flags line =="
+          cat /proc/cpuinfo | grep -m1 flags
+          echo "== go env =="
+          go env GOARCH GOAMD64
+      - name: benchmark (go-simd XXH3 vs zeebo/xxh3 reference)
+        run: |
+          go test -run '^$' -bench 'Sum64|Streaming|Zeebo' -benchmem -count=6 . | tee bench-amd64.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bench-amd64
+          path: bench-amd64.txt
