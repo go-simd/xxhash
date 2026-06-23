@@ -231,13 +231,14 @@ func hashLong(b []byte) uint64 {
 // per-stripe 8-lane multiply-add — is the SIMD-accelerated kernel.
 func accumulate(acc *[8]uint64, b []byte) {
 	nBlocks := (len(b) - 1) / blockBytes
-	for i := 0; i < nBlocks; i++ {
-		blk := b[i*blockBytes:]
-		// One full block is blockStripes stripes with the secret advancing by 8
-		// bytes per stripe; accumRun keeps the accumulator lanes resident in
-		// vector registers across the whole run (the multi-accumulator shape).
-		accumRun(acc, blk, secret[:], blockStripes)
-		scramble(acc)
+	if nBlocks > 0 {
+		// One call folds every full 1024-byte block (16 stripes + the inter-block
+		// scramble). On amd64 accumScramble is a single asm kernel that keeps the
+		// accumulator resident in vector registers across the WHOLE run and runs
+		// the scramble in-register, so the long-input path crosses the Go/asm
+		// boundary just once for the bulk of the input; elsewhere it is the
+		// per-block Go loop.
+		accumScramble(acc, b, secret[:], nBlocks)
 	}
 	// Process the remainder after the last full block.
 	accumTail(acc, b, nBlocks*blockBytes)

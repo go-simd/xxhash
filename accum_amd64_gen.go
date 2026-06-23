@@ -60,8 +60,29 @@ func runSig() abi.Signature {
 	)
 }
 
+func blockSig() abi.Signature {
+	return abi.LayoutArgs(
+		[]abi.Arg{
+			abi.Scalar("acc", abi.Int64), abi.Slice("p"), abi.Slice("sec"),
+			abi.Scalar("nBlocks", abi.Int64),
+		},
+		[]abi.Arg{},
+	)
+}
+
 func main() {
 	f := emit.NewFile("amd64")
+
+	// prime32_1 (0x9E3779B1) broadcast across four 64-bit lanes, used by the
+	// in-asm block scramble's full 64x32->64 multiply. Declared once as a
+	// file-local read-only constant table.
+	primeBytes := []byte{
+		0xb1, 0x79, 0x37, 0x9e, 0x00, 0x00, 0x00, 0x00,
+		0xb1, 0x79, 0x37, 0x9e, 0x00, 0x00, 0x00, 0x00,
+		0xb1, 0x79, 0x37, 0x9e, 0x00, 0x00, 0x00, 0x00,
+		0xb1, 0x79, 0x37, 0x9e, 0x00, 0x00, 0x00, 0x00,
+	}
+	primeSym := f.Data("scramblePrime", primeBytes) // "scramblePrime<>"
 
 	// --- AVX2 single stripe: process all 8 lanes as two YMM registers. ---
 	v := amd64.NewFunc("accumStripeAVX2", stripeSig(), 0)
@@ -127,6 +148,77 @@ func main() {
 		Ret()
 	f.Add(vr.Func())
 
+	// --- AVX2 full-block run: nBlocks complete 1024-byte blocks, each 16 stripes
+	// plus the inter-block scramble, all in one asm call. This is the structural
+	// match to the canonical/zeebo accumulate_512 loop: the eight accumulator
+	// lanes (Y0 lanes 0..3, Y1 lanes 4..7) stay resident in vector registers for
+	// the ENTIRE multi-block run (loaded once, stored once) and the per-block
+	// scramble runs in-register too, so the long-input pipeline never crosses the
+	// Go/asm boundary mid-input. Y8 holds prime32_1 broadcast for the scramble's
+	// full 64x32->64 multiply. The 16 stripes are fully unrolled to expose ILP
+	// (the two banks' mul/add chains software-pipeline against each other and the
+	// next stripe's loads/shuffles start while the current stripe's adds retire);
+	// PREFETCHT0 pulls the next cache lines in ahead of use. nBlocks >= 1.
+	vb := amd64.NewFunc("accumScrambleAVX2", blockSig(), 0)
+	vbb := vb.LoadArg("acc", "AX").LoadArg("p_base", "CX").LoadArg("sec_base", "DX").
+		LoadArg("nBlocks", "BX").
+		Raw("VMOVDQU (AX), Y0").                   // acc[0:4]
+		Raw("VMOVDQU 32(AX), Y1").                 // acc[4:8]
+		Raw("VMOVDQU " + primeSym + "+0(SB), Y8"). // prime32_1 broadcast
+		Label("accumScrambleAVX2_loop")
+	for s := 0; s < 16; s++ {
+		dOff := s * 64
+		sOff := s * 8
+		vbb = vbb.
+			Raw("PREFETCHT0 %d(CX)", dOff+512).
+			// low half (lanes 0..3)
+			Raw("VMOVDQU %d(CX), Y2", dOff).
+			Raw("VPXOR %d(DX), Y2, Y3", sOff).
+			Raw("VPSHUFD $0x31, Y3, Y4").
+			Raw("VPMULUDQ Y3, Y4, Y3").
+			Raw("VPSHUFD $0x4e, Y2, Y2").
+			Raw("VPADDQ Y0, Y3, Y0").
+			Raw("VPADDQ Y0, Y2, Y0").
+			// high half (lanes 4..7)
+			Raw("VMOVDQU %d(CX), Y5", dOff+32).
+			Raw("VPXOR %d(DX), Y5, Y6", sOff+32).
+			Raw("VPSHUFD $0x31, Y6, Y7").
+			Raw("VPMULUDQ Y6, Y7, Y6").
+			Raw("VPSHUFD $0x4e, Y5, Y5").
+			Raw("VPADDQ Y1, Y6, Y1").
+			Raw("VPADDQ Y1, Y5, Y1")
+	}
+	// In-register scramble of both banks: v ^= v>>47; v ^= secret[128+i*8];
+	// v *= prime32_1 (full 64x32->64 via two PMULUDQ + shift).
+	vbb = vbb.
+		// low bank Y0
+		Raw("VPSRLQ $0x2f, Y0, Y3").
+		Raw("VPXOR Y0, Y3, Y3").
+		Raw("VPXOR 128(DX), Y3, Y3").
+		Raw("VPMULUDQ Y8, Y3, Y0").   // lo32 * prime
+		Raw("VPSHUFD $0xf5, Y3, Y3"). // bring hi32 down
+		Raw("VPMULUDQ Y8, Y3, Y3").   // hi32 * prime
+		Raw("VPSLLQ $0x20, Y3, Y3").
+		Raw("VPADDQ Y0, Y3, Y0").
+		// high bank Y1
+		Raw("VPSRLQ $0x2f, Y1, Y3").
+		Raw("VPXOR Y1, Y3, Y3").
+		Raw("VPXOR 160(DX), Y3, Y3").
+		Raw("VPMULUDQ Y8, Y3, Y1").
+		Raw("VPSHUFD $0xf5, Y3, Y3").
+		Raw("VPMULUDQ Y8, Y3, Y3").
+		Raw("VPSLLQ $0x20, Y3, Y3").
+		Raw("VPADDQ Y1, Y3, Y1").
+		// next block: p += 1024 (secret base is fixed across blocks)
+		Raw("ADDQ $1024, CX").
+		Raw("DECQ BX").
+		Raw("JNZ accumScrambleAVX2_loop").
+		Raw("VMOVDQU Y0, (AX)").
+		Raw("VMOVDQU Y1, 32(AX)").
+		Raw("VZEROUPPER")
+	vbb.Ret()
+	f.Add(vb.Func())
+
 	// --- SSE2 single stripe: 8 lanes as four XMM registers (two u64 each). ---
 	s := amd64.NewFunc("accumStripeSSE2", stripeSig(), 0)
 	sb := s.LoadArg("acc", "AX").LoadArg("p_base", "CX").LoadArg("sec_base", "DX")
@@ -185,6 +277,67 @@ func main() {
 		Raw("MOVOU X3, 48(AX)").
 		Ret()
 	f.Add(sr.Func())
+
+	// --- SSE2 full-block run: nBlocks complete 1024-byte blocks (16 stripes +
+	// scramble) in one asm call, mirroring accumScrambleAVX2 but with the four
+	// lane-pairs in X0..X3 resident across the whole run. X8 holds prime32_1
+	// broadcast for the scramble multiply; X4..X7 are scratch. nBlocks >= 1.
+	sbk := amd64.NewFunc("accumScrambleSSE2", blockSig(), 0)
+	sbkb := sbk.LoadArg("acc", "AX").LoadArg("p_base", "CX").LoadArg("sec_base", "DX").
+		LoadArg("nBlocks", "BX").
+		Raw("MOVOU (AX), X0").
+		Raw("MOVOU 16(AX), X1").
+		Raw("MOVOU 32(AX), X2").
+		Raw("MOVOU 48(AX), X3").
+		Raw("MOVOU " + primeSym + "+0(SB), X8").
+		Label("accumScrambleSSE2_loop")
+	bankReg := []string{"X0", "X1", "X2", "X3"}
+	for s := 0; s < 16; s++ {
+		dOff := s * 64
+		sOff := s * 8
+		sbkb = sbkb.Raw("PREFETCHT0 %d(CX)", dOff+512)
+		for h := 0; h < 4; h++ {
+			acc := bankReg[h]
+			sbkb = sbkb.
+				Raw("MOVOU %d(CX), X4", dOff+h*16). // dv
+				Raw("MOVOU %d(DX), X5", sOff+h*16). // sec
+				Raw("MOVOU X4, X6").
+				Raw("PXOR X5, X6"). // dk = dv ^ sec
+				Raw("PSHUFD $0x31, X6, X7").
+				Raw("PMULULQ X6, X7"). // X7 = dk.lo * dk.hi
+				Raw("PSHUFD $0x4e, X4, X4").
+				Raw("PADDQ X7, " + acc).
+				Raw("PADDQ X4, " + acc)
+		}
+	}
+	// In-register scramble of the four banks.
+	for h := 0; h < 4; h++ {
+		acc := bankReg[h]
+		scrOff := 128 + h*16
+		sbkb = sbkb.
+			Raw("MOVOU "+acc+", X4").
+			Raw("PSRLQ $0x2f, X4").
+			Raw("PXOR "+acc+", X4").
+			Raw("MOVOU %d(DX), X5", scrOff).
+			Raw("PXOR X5, X4"). // X4 = (v ^ v>>47) ^ secret
+			Raw("MOVOU X4, X6").
+			Raw("PMULULQ X8, X6"). // lo32 * prime
+			Raw("PSHUFD $0xf5, X4, X4").
+			Raw("PMULULQ X8, X4"). // hi32 * prime
+			Raw("PSLLQ $0x20, X4").
+			Raw("PADDQ X6, X4").
+			Raw("MOVOU X4, " + acc)
+	}
+	sbkb.
+		Raw("ADDQ $1024, CX").
+		Raw("DECQ BX").
+		Raw("JNZ accumScrambleSSE2_loop").
+		Raw("MOVOU X0, (AX)").
+		Raw("MOVOU X1, 16(AX)").
+		Raw("MOVOU X2, 32(AX)").
+		Raw("MOVOU X3, 48(AX)").
+		Ret()
+	f.Add(sbk.Func())
 
 	if err := os.WriteFile("accum_amd64.s", []byte(f.String()), 0o644); err != nil {
 		fmt.Fprintln(os.Stderr, err)

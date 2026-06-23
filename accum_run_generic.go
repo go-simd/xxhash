@@ -12,3 +12,16 @@ func accumRun(acc *[8]uint64, p, sec []byte, nStripes int) {
 		accumStripe(acc, p[s*stripeBytes:], sec[s*8:])
 	}
 }
+
+// accumScramble is the portable form of the amd64 in-asm full-block kernel: it
+// folds nBlocks complete 1024-byte blocks (16 stripes + scramble each) using the
+// per-stripe SIMD kernel and the Go-side scramble. The amd64 build replaces this
+// with a single asm call that keeps the accumulator resident across the whole
+// run and runs the scramble in-register (accum_amd64.go). nBlocks must be >= 1.
+func accumScramble(acc *[8]uint64, p, sec []byte, nBlocks int) {
+	for i := 0; i < nBlocks; i++ {
+		blk := p[i*blockBytes:]
+		accumRun(acc, blk, sec, blockStripes)
+		scramble(acc)
+	}
+}

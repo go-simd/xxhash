@@ -14,6 +14,14 @@ func accumStripeSSE2(acc *[8]uint64, p, sec []byte)
 func accumRunAVX2(acc *[8]uint64, p, sec []byte, nStripes int)
 func accumRunSSE2(acc *[8]uint64, p, sec []byte, nStripes int)
 
+// accumScrambleAVX2/SSE2 fold nBlocks complete 1024-byte blocks (each 16 stripes
+// then the inter-block scramble) in a single call, keeping the eight accumulator
+// lanes resident in vector registers across the WHOLE multi-block run. This folds
+// the per-block scramble into asm and lets the long-input path cross the Go/asm
+// boundary just once, matching the canonical XXH3 accumulate loop. nBlocks >= 1.
+func accumScrambleAVX2(acc *[8]uint64, p, sec []byte, nBlocks int)
+func accumScrambleSSE2(acc *[8]uint64, p, sec []byte, nBlocks int)
+
 var hasAVX2 = cpu.X86.HasAVX2
 
 func accumStripe(acc *[8]uint64, p, sec []byte) {
@@ -34,4 +42,15 @@ func accumRun(acc *[8]uint64, p, sec []byte, nStripes int) {
 		return
 	}
 	accumRunSSE2(acc, p, sec, nStripes)
+}
+
+// accumScramble folds nBlocks complete 1024-byte blocks (16 stripes + scramble
+// each) in a single asm call, with the accumulator resident in vector registers
+// for the whole run. nBlocks must be >= 1.
+func accumScramble(acc *[8]uint64, p, sec []byte, nBlocks int) {
+	if hasAVX2 {
+		accumScrambleAVX2(acc, p, sec, nBlocks)
+		return
+	}
+	accumScrambleSSE2(acc, p, sec, nBlocks)
 }
