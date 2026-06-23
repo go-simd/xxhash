@@ -95,10 +95,13 @@ Honest numbers. Native arm64 (Apple silicon), `Sum64`:
 | 64 KiB | ~15.2 GB/s | ~22.9 GB/s |
 
 On arm64 zeebo is faster: its NEON kernel folds a whole 1024-byte block per call
-with software-pipelined stripes, whereas this package uses a clean single-stripe
-kernel (one call per 64 bytes) that prioritises portability and bit-exactness
-across six arches over peak throughput. Closing that gap (block-at-a-time
-kernels) is the obvious next step.
+with software-pipelined stripes, whereas the arm64 path here still uses a clean
+single-stripe kernel (one call per 64 bytes) that prioritises portability and
+bit-exactness across six arches over peak throughput. The **amd64** path has
+since moved to a multi-accumulator kernel that keeps the accumulator banks
+resident in vector registers across a whole run of stripes (~3× faster on large
+inputs — see `BENCHMARKS.md`); bringing the same block-at-a-time structure to the
+arm64 NEON kernel is the obvious next step.
 
 For **ppc64le and s390x** the SIMD path is **QEMU-validated for correctness;
 native throughput numbers are pending real hardware** — but these are arches the
