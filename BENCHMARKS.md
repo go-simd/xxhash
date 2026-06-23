@@ -17,37 +17,48 @@ absolute throughput is noisy; the **ratio vs zeebo/xxh3** is measured
 back-to-back on the *same* CPU and is valid. Reproduce via
 `gh workflow run bench-amd64.yml`.
 
-The table shows the kernel **before** (single-stripe: the accumulator round-tripped
-through memory once per 64-byte stripe) and **after** the multi-accumulator
-kernel (the four 256-bit accumulator banks stay resident in vector registers
-across a whole run of stripes), both measured on the same EPYC 7763 runner.
+The table tracks three kernel generations, all measured on the **same EPYC 7763**
+runner: **(a)** the original single-stripe kernel (accumulator round-tripped
+through memory once per 64-byte stripe); **(b)** the multi-accumulator run
+kernel (accumulator banks resident across a run of stripes, but the per-block
+scramble still in scalar Go and a Go/asm call per block); and **(c)** the
+**full-block** kernel (a single asm call folds every 1024-byte block — 16
+fully-unrolled stripes **plus the inter-block scramble in-register** — with the
+accumulator resident across the whole multi-block run and `PREFETCHT0` ahead of
+use; the long-input path now crosses the Go/asm boundary just once). Ratios are
+min-of-6 vs `zeebo/xxh3` back-to-back on the same CPU.
 
-| size | before (MB/s) | after (MB/s) | zeebo/xxh3 (ref) | ×zeebo before | ×zeebo after |
-|------|--------------:|-------------:|-----------------:|--------------:|-------------:|
-| 8 B    | 1829 |  1833 |  2327 | 0.78× | 0.79× |
-| 64 B   | 9327 |  9326 | 12241 | 0.76× | 0.76× |
-| 256 B  | 4341 |  5393 | 12015 | 0.36× | 0.45× |
-| 1 KiB  | 7840 | 16703 | 30487 | 0.26× | **0.55×** |
-| 8 KiB  | 9188 | 26516 | 49441 | 0.19× | **0.54×** |
-| 64 KiB | 9510 | 29057 | 53267 | 0.18× | **0.55×** |
+| size | (a) single | (b) multi-acc | (c) full-block | zeebo/xxh3 | ×zeebo (b) | ×zeebo (c) |
+|------|-----------:|--------------:|---------------:|-----------:|-----------:|-----------:|
+| 8 B    | 1829 |  1833 |  1834 |  2332 | 0.79× | 0.79× |
+| 64 B   | 9327 |  9326 |  9328 | 12266 | 0.76× | 0.76× |
+| 256 B  | 4341 |  5393 |  5433 | 12037 | 0.45× | 0.45× |
+| 1 KiB  | 7840 | 16703 | 16562 | 30492 | 0.55× | 0.54× |
+| 8 KiB  | 9188 | 26516 | 40928 | 49528 | 0.54× | **0.83×** |
+| 64 KiB | 9510 | 29057 | 50266 | 53324 | 0.55× | **0.94×** |
 
-> **Honest finding (amd64): the multi-accumulator kernel closes most of the
-> structural gap, but zeebo's hand-tuned asm still leads ~1.8× at scale.**
-> The big-input throughput went from ~9.5 GB/s to **~29 GB/s** — a **~3.05×
-> speedup at 64 KiB** — and the ratio vs zeebo went from **0.18× to 0.55×**.
-> Crucially the gap no longer *widens* with size: the single-stripe version
-> collapsed to 0.18× because the per-stripe load/store serialized the kernel;
-> the multi-accumulator version holds a flat ~0.55× from 1 KiB to 64 KiB because
-> the four independent mul/add chains now software-pipeline. It does **not** yet
-> reach parity: zeebo additionally unrolls multiple stripes per loop iteration
-> and folds the whole long-input pipeline (block scramble included) in assembly,
-> avoiding go-simd's per-block Go/asm call boundary. Correctness is unchanged —
-> byte-exact to zeebo and the canonical golden vectors, fuzz-clean, 100% cover.
+> **Honest finding (amd64): the full-block kernel reaches near-parity at scale —
+> 0.94× zeebo at 64 KiB (was 0.55×) and 0.83× at 8 KiB (was 0.54×).** Folding the
+> 16-stripe block *and its scramble* into one in-register asm call — so the
+> long-input path crosses the Go/asm boundary once for the whole input instead of
+> twice per 1024-byte block, and the scramble runs vectorized instead of in
+> scalar Go — was the dominant lever. 64 KiB throughput went from ~29 GB/s to
+> **~50 GB/s** (a further **1.73×** on top of the multi-accumulator kernel, and
+> **~5.3×** over the original single-stripe kernel), landing within **6%** of
+> zeebo. The benefit grows with input size because the per-block savings amortize
+> over more blocks: at 1 KiB (a single block) there is essentially nothing to
+> amortize, so it holds the multi-accumulator kernel's ~0.54×; the remaining gap
+> to zeebo there is the short-input merge/avalanche plus the one boundary
+> crossing, not the stripe loop. The unroll-multiple-stripes-per-iter lever (the
+> 16 stripes are already fully unrolled here) and prefetch are folded in.
+> Correctness is unchanged — byte-exact to zeebo and the canonical golden vectors
+> on every length class incl. block boundaries, fuzz-clean, 100% cover, verified
+> on both AVX2 and SSE2 dispatch and on big-endian s390x.
 
 ### Action items
-1. **Close the remaining ~1.8×:** unroll the stripe loop (process N stripes per
-   iteration) and move the per-block scramble into the asm run so the long-input
-   path never crosses the Go/asm boundary mid-block, matching zeebo's structure.
+1. **Close the remaining 1 KiB gap (~0.54×):** at a single block the win is in
+   the short-input merge and removing the lone boundary crossing, not the stripe
+   loop — a small-long-input fast path could help.
 2. Re-measure on AVX-512 silicon once available (the GitHub Actions runner here
    is AVX2-only) — zeebo gains substantially from AVX-512, and the parity bar
    should be set against the same ISA.
