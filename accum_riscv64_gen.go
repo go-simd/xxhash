@@ -16,6 +16,12 @@
 // other architecture. Requires V with VLEN >= 128 (VL=8 at SEW=64 needs 512-bit
 // LMUL=4; we set LMUL=M4).
 //
+// The input stripe (p) and secret (sec) are loaded as byte elements (vle8.v),
+// not vle64.v: xxhash feeds arbitrarily-aligned input, and a vle64.v of an
+// 8-byte-misaligned address SIGBUSes on hardware lacking misaligned vector
+// support (observed on the SpacemiT X60). Reinterpreting the byte-loaded
+// register group as u64 lanes is a no-op on this little-endian target.
+//
 // Run: go run accum_riscv64_gen.go
 package main
 
@@ -35,11 +41,20 @@ func main() {
 	)
 	b := riscv64.NewFunc("accumStripeRVV", sig, 0)
 	b.LoadArg("acc", "X5").LoadArg("p_base", "X6").LoadArg("sec_base", "X7").
-		Raw("VSETVLI $8, E64, M4, TA, MA, X8"). // 8 lanes of u64
+		// Load the 64-byte input stripe (p) and secret (sec) as byte elements
+		// (vle8.v, vl=64). xxhash feeds arbitrarily-aligned input, and a vle64.v
+		// of an 8-byte-misaligned address SIGBUSes on hardware that does not
+		// support element-misaligned vector loads (observed on the SpacemiT X60).
+		// vle8.v only needs byte alignment, which always holds; reinterpreting the
+		// same register group as 8 little-endian u64 lanes is a no-op on a
+		// little-endian target, so the digest is unchanged. acc (X5) is a
+		// *[8]uint64 and is always 8-byte aligned, so its vle64.v stays.
+		Raw("MOV $64, X9").
+		Raw("VSETVLI X9, E8, M4, TA, MA, X8").  // 64 byte elements
+		Raw("VLE8V (X6), V8").                  // dv bytes (alignment-safe)
+		Raw("VLE8V (X7), V12").                 // key bytes (alignment-safe)
+		Raw("VSETVLI $8, E64, M4, TA, MA, X8"). // reinterpret: 8 lanes of u64
 		Raw("MOV $32, X9").
-		// load
-		Raw("VLE64V (X6), V8").     // dv
-		Raw("VLE64V (X7), V12").    // key
 		Raw("VXORVV V8, V12, V16"). // dk = dv ^ key  (note: VXORVV dst,vs1,vs2)
 		// lo = dk & 0xFFFFFFFF via << 32 >> 32 ; hi = dk >> 32
 		Raw("VSLLVX X9, V16, V20").

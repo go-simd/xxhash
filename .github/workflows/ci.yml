@@ -31,7 +31,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { arch: riscv64, image: "debian:trixie", qemu: "rv64,v=true,vlen=128,vext_spec=v1.0" }
+          # vlen=256 mirrors the real SpacemiT X60 (VLMAX at SEW=8/LMUL=1 = 32,
+          # not 16) for broader RVV coverage. Note: qemu permits misaligned vector
+          # loads, so it cannot reproduce the vle64.v SIGBUS this kernel hit on the
+          # X60 (now byte-loaded); that fix is validated on real RVV hardware.
+          - { arch: riscv64, image: "debian:trixie", qemu: "rv64,v=true,vlen=256,vext_spec=v1.0" }
           - { arch: loong64, image: "ghcr.io/loong64/debian:trixie", qemu: "la464" }
           - { arch: ppc64le, image: "debian:trixie", qemu: "power9" }
           - { arch: s390x,   image: "debian:trixie", qemu: "qemu" }
