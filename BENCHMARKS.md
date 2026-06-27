@@ -68,6 +68,82 @@ min-of-6 vs `zeebo/xxh3` back-to-back on the same CPU.
   boundaries (`TestReference`, 100% coverage, fuzz-clean) — re-verified after the
   multi-accumulator kernel under qemu-x86_64 (both AVX2 and SSE2 dispatch paths)
   and qemu-s390x (big-endian). The shortfall is throughput, not correctness.
-* arm64 (M4 Max NEON) numbers are not yet captured in this file; the amd64 AVX2
-  column above is the GitHub Actions measurement. Different hardware/ISA rows are
-  not directly comparable in absolute terms.
+* arm64 (Apple NEON) numbers are captured below; the amd64 AVX2 column above is
+  the GitHub Actions measurement. Different hardware/ISA rows are not directly
+  comparable in absolute terms.
+
+## arm64 (NEON, Apple — register-resident run + in-asm scramble)
+
+**Methodology.** Local Apple-silicon NEON, Go stable, single core, `-count=2..3`,
+ours vs `zeebo/xxh3` back-to-back on the same CPU. "Before" = the per-stripe
+kernel (accumulator round-tripped to memory once per 64-byte stripe, one Go/asm
+call per stripe); "after" = the `accumRun` + `accumScramble` kernels (the four
+NEON accumulator pairs stay resident across the whole multi-block run and the
+inter-block scramble runs in-register, mirroring the amd64 full-block kernel).
+
+| size   | before (MB/s) | after (MB/s) | zeebo (MB/s) | ×zeebo before | ×zeebo after |
+|--------|--------------:|-------------:|-------------:|--------------:|-------------:|
+| 256 B  |  7092 |  9346 | 13900 | 0.51× | 0.67× |
+| 1 KiB  | 11024 | 19700 | 17900 | 0.62× | **1.10×** |
+| 8 KiB  | 12482 | 25400 | 18360 | 0.68× | **1.38×** |
+| 64 KiB | 12586 | 26550 | 18700 | 0.66× | **1.42×** |
+
+> **arm64 now beats zeebo on every long input (1 KiB+): ~1.1–1.4×, up from
+> ~0.66×.** The register-residency + in-asm-scramble lever removed the per-stripe
+> accumulator memory round-trip and the per-stripe Go/asm boundary that capped the
+> kernel. The 256 B case (`hashLong` with only three tail stripes, no full block)
+> improved 0.51×→0.67× but still trails — that residual is the short/mid finalize
+> path shared with the scalar code, not the stripe loop.
+
+## ppc64le / loong64 / riscv64 / s390x (cross-arch lever)
+
+The same `accumRun` + `accumScramble` register-resident kernels were ported to
+all four remaining SIMD arches (VSX, LSX, RVV, z/vector). The structural change
+is identical to arm64 — accumulator pairs/lanes resident across the whole
+multi-block run, scramble in-register (full 64×32→64 via two odd-word multiplies
+on ppc64le/s390x; a native 64-bit `VMULV`/`VMULVX` on loong64/riscv64).
+
+### riscv64 (RVV 1.0, real SpacemiT X60 silicon — cfarm95, MEASURED)
+
+**Methodology.** cfarm95 (SpacemiT X60, **RVV 1.0**, `cpu.RISCV64.HasV == true`
+verified — the RVV kernel ran, not the scalar fallback), Go 1.26.4, single core,
+`-count=3`, best-of-3, ours vs `zeebo/xxh3` back-to-back on the same CPU. This is
+the arch whose kernel previously hit the misaligned `vle64.v` SIGBUS (fixed in
+`bc34657` by byte-loading the input stripe): **`TestReference` + `TestOfficialVectors`
++ the full suite pass byte-exact on real X60 silicon — no SIGBUS, no SIGILL.**
+
+| size   | ours (MB/s) | zeebo (MB/s) | ×zeebo |
+|--------|------------:|-------------:|-------:|
+| 8 B    |    63.6 |  119.1 | 0.53× |
+| 64 B   |   123.3 |  228.3 | 0.54× |
+| 256 B  |   187.2 |  141.7 | **1.32×** |
+| 1 KiB  |   341.7 |  136.6 | **2.50×** |
+| 8 KiB  |   438.1 |  133.0 | **3.29×** |
+| 64 KiB |   472.6 |  133.1 | **3.55×** |
+
+> **riscv64 RVV crushes zeebo on every long input (256 B+): 1.3×–3.6×.** zeebo/xxh3
+> has no RVV kernel — it runs the scalar path on RISC-V (flat ~130–230 MB/s) — so
+> the register-resident RVV `accumScramble` kernel pulls ahead by 3.5× at 64 KiB
+> (472 MB/s vs 133). The 8 B / 64 B cases trail (0.53×) because that path is the
+> short-input merge/avalanche shared with scalar code, not the RVV stripe loop.
+> Byte-exact and crash-free on real X60.
+
+### ppc64le (VSX, real POWER9 + POWER8E silicon — cfarm433/cfarm112)
+
+**Correctness MEASURED on real silicon:** `TestReference` + `TestOfficialVectors`
++ full suite pass byte-exact on cfarm433 (**POWER9**, VSX kernel active) and
+cfarm112 (**POWER8E**, baseline-VSX path) — no SIGILL on the older ISA. Throughput
+was sampled on cfarm433 but it is a heavily-shared 64-thread box, so absolute
+numbers are noisy; best-of-3 at 64 KiB was ~4.07 GB/s ours vs ~4.49 GB/s zeebo
+(**~0.91×**, near parity), narrowing from the prior ~0.49× single-stripe gap. The
+ratio is indicative only given the shared host; correctness is the firm result.
+
+### loong64 / s390x (qemu-verified)
+
+loong64 la464 (LSX + scalar fallback) and s390x big-endian (official vectors +
+reference + streaming) are verified under qemu on every length class — including
+the new POWER8 ISA-guard and multi-VLEN (128/256/512) RVV CI lanes. cfarm401
+(loong64) is air-gapped, and there is no z/Architecture cfarm node, so these two
+rely on the qemu CI lanes for correctness; the riscv64 measured column above is
+the directly-measured proxy for the identical cross-arch lever. 100% coverage on
+all four arches.
