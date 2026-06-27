@@ -1,4 +1,4 @@
-//go:build !amd64 && !arm64 && !riscv64
+//go:build !amd64 && !arm64 && !riscv64 && !ppc64le && !loong64 && !s390x
 
 package xxhash
 
