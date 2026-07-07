@@ -104,11 +104,22 @@ run, prefetched — reaching **~0.94× zeebo at 64 KiB** (~50 GB/s, ~5× the ori
 single-stripe kernel; see `BENCHMARKS.md`); bringing the same block-at-a-time
 structure to the arm64 NEON kernel is the obvious next step.
 
-For **ppc64le and s390x** the SIMD path is **QEMU-validated for correctness;
-native throughput numbers are pending real hardware** — but these are arches the
-existing libraries provide no SIMD for at all. amd64 SIMD is correctness- and
-coverage-validated on a real x86_64 OS; the benchmark figures from that
-(QEMU-backed) VM are not representative of native AVX2 hardware and are omitted.
+For **ppc64le** the SIMD path is QEMU-validated for correctness; native
+throughput numbers are pending real hardware — but this is an arch the
+existing libraries provide no SIMD for at all.
+
+For **s390x — measured on real z15** (LPAR guest, VXE2, Ubuntu 6.8,
+go1.26.4, 2026-07-03): `Sum64/65536` = **10333 MB/s vs zeebo 4554 MB/s =
+2.27× — BEATS zeebo**. This flips the SpacemiT X60 (RVV) story where
+zeebo won by ~1.8×; on z15's wider VXE2 execution pipe the `VMLOF` big-
+endian accum path is genuinely faster than zeebo's amd64-tuned scalar.
+The same measurement shows z15's `Sum64/8192` at 9959 MB/s and
+`Sum64/1024` at 7951 MB/s. First arch where go-simd/xxhash beats the
+strongest pure-Go reference.
+
+amd64 SIMD is correctness- and coverage-validated on a real x86_64 OS;
+the benchmark figures from that (QEMU-backed) VM are not representative
+of native AVX2 hardware and are omitted.
 
 ## License
 
