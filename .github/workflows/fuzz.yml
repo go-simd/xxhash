@@ -28,7 +28,7 @@ jobs:
         continue-on-error: true
       - name: upload any fuzz-discovered corpus
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: fuzz-findings-${{ matrix.arch }}
           path: testdata/fuzz/
