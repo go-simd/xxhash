@@ -13,5 +13,5 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
-        with: { go-version: stable }
+        with: { go-version: 1.27.1 }
       - run: go test -run '^$' -bench 'Sum64|Streaming' -count=3 .
