@@ -7,10 +7,11 @@
 // lanes each (V1..V4). For each 2-lane chunk: dk = dv ^ key; the 32x32->64
 // product lo32(dk)*hi32(dk) is added to the lane, and the input word dv (with
 // the two lanes of the pair exchanged via VEXT $8 — the acc[i^1] swap) is added
-// too. XTN / SHRN / UMULL have no Go assembler mnemonics, so they are emitted as
-// the documented WORD encodings (same approach as the upstream zeebo/xxh3 NEON
-// kernel). The math is integer add/mul, lane-neutral, so the digest matches
-// every other architecture.
+// too. The narrowing and widening steps use VXTN / VSHRN / VUMULL (and VSHL for
+// the scramble), mnemonics the Go assembler has had since Go 1.27; earlier
+// releases lacked them and this kernel hand-encoded them as WORDs. The math is
+// integer add/mul, lane-neutral, so the digest matches every other
+// architecture.
 //
 // Three shapes are emitted, mirroring the amd64 kernel:
 //
@@ -69,14 +70,17 @@ func blockSig() abi.Signature {
 	)
 }
 
-// WORD encodings for the NEON ops the Go assembler lacks mnemonics for.
-func xtn(d, n int) string  { return fmt.Sprintf("WORD $%#x", 0x0EA12800|(n<<5)|d) } // XTN  Vd.2S, Vn.2D -> low 32
-func shrn(d, n int) string { return fmt.Sprintf("WORD $%#x", 0x0F208400|(n<<5)|d) } // SHRN #32, Vn.2D, Vd.2S -> high 32
-func umull(d, n, m int) string {
-	return fmt.Sprintf("WORD $%#x", 0x2EA0C000|(m<<16)|(n<<5)|d) // UMULL Vd.2D, Vn.2S, Vm.2S -> 32x32->64
+// NEON narrowing/widening helpers. Go assembler operand order is sources
+// first, destination last.
+func xtn(d, n int) string { return fmt.Sprintf("VXTN V%d.D2, V%d.S2", n, d) } // XTN  Vd.2S, Vn.2D -> low 32
+func shrn(d, n int) string { // SHRN Vd.2S, Vn.2D, #32 -> high 32
+	return fmt.Sprintf("VSHRN $32, V%d.D2, V%d.S2", n, d)
+}
+func umull(d, n, m int) string { // UMULL Vd.2D, Vn.2S, Vm.2S -> 32x32->64
+	return fmt.Sprintf("VUMULL V%d.S2, V%d.S2, V%d.D2", m, n, d)
 }
 func shl32(d, n int) string { // SHL Vd.2D, Vn.2D, #32  (left shift each doubleword by 32)
-	return fmt.Sprintf("WORD $%#x", 0x4F605400|(n<<5)|d)
+	return fmt.Sprintf("VSHL $32, V%d.D2, V%d.D2", n, d)
 }
 
 // stripeBody emits the four-chunk stripe accumulate over accumulator banks
