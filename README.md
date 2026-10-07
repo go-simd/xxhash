@@ -46,7 +46,7 @@ ignore`; the `.s` is committed):
 | arch | ISA | multiply | lane swap |
 |---|---|---|---|
 | amd64   | SSE2 + **AVX2** (auto) | `(V)PSHUFD`+`(V)PMULUDQ` | `(V)PSHUFD $0x4e` |
-| arm64   | NEON | `XTN`/`SHRN`/`UMULL` (WORD-encoded) | `VEXT $8` |
+| arm64   | NEON | `VXTN`/`VSHRN`/`VUMULL` | `VEXT $8` |
 | ppc64le | VSX  | `VMULOUW` on `lo`/`hi` (no 64-bit vec mul on POWER8/9) | `VSLDOI $8` |
 | s390x   | vector facility (**big-endian**) | `VMLOF` (odd-word widening) | `VPDI $4` |
 | riscv64 | RVV  | `VMULVV` (low 64 = full product) | `VRGATHERVV` |
